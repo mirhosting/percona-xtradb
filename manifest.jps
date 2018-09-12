@@ -1,0 +1,71 @@
+{
+    "jpsType": "install",
+    "name": "Percona Xtradb Cluster",
+    "description": "Percona Xtradb Cluster Auto-scalable",
+    "success": "Installed. Root password: ${globals.DB_PASS}",
+    "globals": {
+        "CLUSTER_NAME": "Test",
+        "SST_PASSWORD": "${fn.password(10)}",
+        "DB_PASS": "${fn.password(20)}"
+    },
+    "nodes": [{
+        "image": "mirhosting/percona-xtradb",
+        "count": 3,
+        "cloudlets": 8,
+        "nodeGroup": "sqldb",
+        "displayName": "Database Cluster"
+    }],
+    "onInstall": [{
+        "forEach(nodes.sqldb)": [{
+            "if (${@i.ismaster})": {
+                "cmd[${@i.id}]": [
+                    "systemctl start mysql",
+                    "wget https://raw.githubusercontent.com/mirhosting/percona-xtradb/master/setupPassword.sh -O ~/setupPassword.sh &>> /var/log/run.log",
+                    "bash ~/setupPassword.sh ${globals.DB_PASS} &>> /var/log/run.log",
+                    "systemctl stop mysql"
+                ]
+            }
+        }, {
+            "setupInstance": {
+                "filter": "${@i.id}",
+                "ip": "${@i.address}"
+            }
+        }, {
+            "clusterSetup": {
+                "filter": "${@i.id}"
+            }
+        }, {
+            "if (${@i.ismaster})": {
+                "cmd[${@i.id}]": [
+                    "systemctl start mysql@bootstrap.service",
+                    "mysql -u root -p${globals.DB_PASS} -e \"CREATE USER 'sstuser'@'localhost' IDENTIFIED BY '${globals.SST_PASSWORD}';\"",
+                    "mysql -u root -p${globals.DB_PASS} -e \"GRANT RELOAD, LOCK TABLES, PROCESS, REPLICATION CLIENT ON *.* TO 'sstuser'@'localhost';\"",
+                    "mysql -u root -p${globals.DB_PASS} -e \"FLUSH PRIVILEGES;\""
+                ]
+            }
+        }, {
+            "if (!${@i.ismaster})": {
+                "cmd[${@i.id}]": "systemctl restart mysql"
+            }
+        }]
+    }],
+    "actions": {
+        "clusterSetup": {
+            "forEach(n:nodes.sqldb)": {
+                "cmd[${this.filter}]": [
+                    "sed -i \"/^wsrep_cluster_address/ s/$/${@n.address},/\" /etc/percona-xtradb-cluster.conf.d/wsrep.cnf"
+                ],
+                "user": "root"
+            }
+        },
+        "setupInstance": [{
+            "cmd[${this.filter}]": [
+                "sed -i \"s/wsrep_cluster_name.*/wsrep_cluster_name = ${globals.CLUSTER_NAME}/\" /etc/percona-xtradb-cluster.conf.d/wsrep.cnf",
+                "sed -i \"s/#wsrep_node_address.*/wsrep_node_address = ${this.ip}/\" /etc/percona-xtradb-cluster.conf.d/wsrep.cnf",
+                "sed -i \"s/wsrep_node_name.*/wsrep_node_name = node${this.filter}/\" /etc/percona-xtradb-cluster.conf.d/wsrep.cnf",
+                "sed -i \"s/#wsrep_sst_auth.*/wsrep_sst_auth='sstuser:${globals.SST_PASSWORD}'/\" /etc/percona-xtradb-cluster.conf.d/wsrep.cnf"
+            ],
+            "user": "root"
+        }]
+    }
+}
